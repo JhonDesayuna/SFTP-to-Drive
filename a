@@ -1,0 +1,124 @@
+#@title **Create User**
+#@markdown <h1><center><b>Datos de tu VPS</center></b></h1></br>
+#@markdown Añade los datos de tu servidor
+
+# Instalar la biblioteca paramiko
+!pip install paramiko concurrent.futures
+
+# Esperar unos segundos después de la instalación para asegurar que se complete.
+import time
+time.sleep(5)  # Espera 5 segundos para asegurar la instalación.
+
+# Ahora importa paramiko y otras bibliotecas necesarias.
+import paramiko
+import os
+from concurrent.futures import ThreadPoolExecutor
+
+# Función para conectar al servidor y transferir la carpeta completa a Google Drive
+def transfer_folder_to_drive():
+    # Configuración de conexión SFTP
+    hostname = ""  #@param {type:"string"}
+    port = "22"  #@param {type:"string"}
+    username = ""  #@param {type:"string"}
+    password = ""  #@param {type:"string"}
+
+    # Convertir el puerto a entero
+    port = int(port)
+
+    # Ejemplo de uso posterior con los parámetros capturados.
+    print(f"Conectando a {hostname} en el puerto {port} con el usuario {username}.")
+
+    #@markdown
+    # Directorios de origen y destino
+
+    #@markdown Directorio en el servidor SFTP
+    remote_folder_path = ""  #@param {type:"string"}
+    #@markdown Directorio en Google Drive
+    local_folder_path = ""  #@param {type:"string"}
+
+    try:
+        # Crear el cliente SSH y establecer la conexión
+        transport = paramiko.Transport((hostname, port))
+        transport.connect(username=username, password=password)
+
+        # Establecer la conexión SFTP
+        sftp = paramiko.SFTPClient.from_transport(transport)
+        print("Conexión SFTP establecida con éxito.")
+
+        # Verificar si la carpeta de destino en Google Drive existe, y crearla si no existe
+        if not os.path.exists(local_folder_path):
+            os.makedirs(local_folder_path)
+            print(f"Carpeta creada en Google Drive: {local_folder_path}")
+        else:
+            print(f"La carpeta ya existe en Google Drive: {local_folder_path}")
+
+        # Función para contar todos los archivos en la carpeta remota
+        def count_files(remote_path):
+            total_files = 0
+            for item in sftp.listdir(remote_path):
+                remote_item_path = os.path.join(remote_path, item)
+                if sftp.stat(remote_item_path).st_mode & 0o040000:  # Si es un directorio
+                    total_files += count_files(remote_item_path)
+                else:  # Si es un archivo
+                    total_files += 1
+            return total_files
+
+        # Función para transferir un archivo
+        def transfer_file(remote_item_path, local_item_path, current_count, total_files):
+            # Verificar si el archivo ya existe
+            if os.path.exists(local_item_path):
+                # Verificar si el tamaño del archivo es el mismo
+                remote_file_size = sftp.stat(remote_item_path).st_size
+                local_file_size = os.path.getsize(local_item_path)
+
+                if remote_file_size == local_file_size:
+                    print(f"Archivo ya existe y es idéntico: {local_item_path}, saltando...")
+                    current_count += 1  # Incrementar el contador también cuando se salta el archivo
+                    print(f"Progreso: {current_count}/{total_files} archivos procesados")
+                    return current_count  # Si el archivo es idéntico, no hacer nada
+                else:
+                    print(f"Archivo existente con tamaño diferente, reemplazando: {local_item_path}")
+
+            # Transferir archivo
+            sftp.get(remote_item_path, local_item_path)
+            current_count += 1
+            print(f"Transferido archivo {current_count}/{total_files}: {local_item_path}")
+            return current_count
+
+        # Función para transferir archivos de una carpeta de forma recursiva con verificación
+        def transfer_files(remote_path, local_path, executor, current_count, total_files):
+            for item in sftp.listdir(remote_path):
+                remote_item_path = os.path.join(remote_path, item)
+                local_item_path = os.path.join(local_path, item)
+
+                # Verificar si es un directorio o un archivo
+                if sftp.stat(remote_item_path).st_mode & 0o040000:  # Si es un directorio
+                    if not os.path.exists(local_item_path):
+                        os.makedirs(local_item_path)
+                    current_count = transfer_files(remote_item_path, local_item_path, executor, current_count, total_files)
+                else:  # Si es un archivo, transferir en paralelo
+                    future = executor.submit(transfer_file, remote_item_path, local_item_path, current_count, total_files)
+                    current_count = future.result()  # Obtener el nuevo valor del contador después de cada transferencia
+            return current_count
+
+        # Contar el total de archivos a transferir
+        total_files = count_files(remote_folder_path)
+        print(f"Total de archivos a transferir: {total_files}")
+
+        # Ejecutar la transferencia en paralelo
+        with ThreadPoolExecutor() as executor:
+            current_count = 0
+            current_count = transfer_files(remote_folder_path, local_folder_path, executor, current_count, total_files)
+
+        print(f"Proceso completado: {current_count}/{total_files} archivos procesados.")
+
+        # Cerrar la conexión SFTP
+        sftp.close()
+        transport.close()
+        print("Conexión SFTP cerrada.")
+
+    except Exception as e:
+        print(f"Error al conectar y transferir archivos: {e}")
+
+# Llamar a la función para conectar y transferir la carpeta completa
+transfer_folder_to_drive()
